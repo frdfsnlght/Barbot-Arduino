@@ -58,7 +58,7 @@ IN THE SOFTWARE.
 #define NUM_PATTERN_SLOTS       8
 #define PATTERN_SLOT_BASE       0
 
-#define INPUT_BUFFER_LENGTH     32
+#define INPUT_BUFFER_LENGTH     64
 
 #define LED_TOGGLE_INTERVAL_FAST  250
 #define LED_TOGGLE_INTERVAL_SLOW  1000
@@ -66,6 +66,15 @@ IN THE SOFTWARE.
 #define PROXIMITY_WINDOW        5
 #define BUTTON_PRESS_SHORT      1000
 #define BUTTON_PRESS_LONG       8000
+
+#define PATTERN_WIPE            0
+#define PATTERN_MULTIWIPE       1
+#define PATTERN_BLINK           2
+#define PATTERN_RAINBOW         3
+#define PATTERN_CHASE           4
+#define PATTERN_SCAN            5
+#define PATTERN_FADE            6
+#define PATTERN_FIRE            7
 
 #define STATE_OFF               0
 #define STATE_OFF_P             1
@@ -137,12 +146,16 @@ void setup() {
     pinMode(PIN_RELAY2, OUTPUT);
     pinMode(PIN_LED, OUTPUT);
     
+    turnOffRelays();
+    
     lights.setupSegment(0, 0, NUM_PIXELS);
     for (int i = 0; i < NUM_SEGMENTS - 1; i++) {
         lights.setupSegment(i + 1, i * NUM_PIXELS / (NUM_SEGMENTS - 1), NUM_PIXELS / (NUM_SEGMENTS - 1));
     }
     lights.begin();
     lights.setSegmentColor(COLOR_OFF, 0);
+
+    turnOffLights();
     
     randomSeed(analogRead(0));
     
@@ -152,8 +165,6 @@ void setup() {
         configureSensors();
     }
 
-    turnOffRelays();
-    turnOffLights();
     turnOffLED();
         
     sendMessage(F("Barbot-Arduino ready"));
@@ -207,8 +218,10 @@ void loopLights() {
 }
 
 void loopButton() {
-    bool pressed = digitalRead(PIN_BUTTON);
+    bool pressed = !digitalRead(PIN_BUTTON);
 
+//    send(pressed ? "pressed\n" : "not pressed\n");
+    
     switch (state) {
         case STATE_OFF:
             if (pressed) {
@@ -701,6 +714,10 @@ void sendInt(int i) {
     Serial.print(i);
 }
 
+void sendLUInt(long unsigned i) {
+    Serial.print(i);
+}
+
 void sendOK() {
     send(F("OK\n"));
 }
@@ -818,11 +835,11 @@ uint8_t playLightPatternSlot(uint8_t slot) {
 }
 
 uint8_t loadLightPatternSlot(uint8_t slot) {
-    for (byte i = 0; ; i++) {
+    for (byte i = 0; i < INPUT_BUFFER_LENGTH; i++) {
         inputBuffer.data[i] = EEPROM.read(PATTERN_SLOT_BASE + (slot * INPUT_BUFFER_LENGTH) + i);
         if ((i == 0) &&
             ((inputBuffer.data[0] == 255) || (inputBuffer.data[0] == 0))) return ERR_NO_PATTERN;
-        if (! inputBuffer.data[i]) break;
+        if (inputBuffer.data[i] == 0) break;
     }
     return ERR_OK;
 }
@@ -833,7 +850,9 @@ uint8_t playLightPattern(char* str) {
     byte patNum = (byte)readUInt(&str);
     readDelim(&str);
     
-    color_t color1, color2;
+//    send("segments: "); sendInt(segments); sendChar('\n');
+    
+    color_t colors[4];
     unsigned long interval1 = 0, interval2 = 0;
     uint8_t mode = 0;
     uint8_t direction = 0;
@@ -841,27 +860,64 @@ uint8_t playLightPattern(char* str) {
     uint16_t cooling, sparking;
 
     prepareLightSegments();
-    
+
+    // lp1:2:3:4,1,2,30:30:30,0,20,7
+    // lp1:2:3:4,1,2,30:0:0,0,20,7
+
     switch (patNum) {
-        case 0:
-            color1 = readColor(&str);
+        case PATTERN_WIPE:
+            colors[0] = readColor(&str);
             readDelim(&str);
             interval1 = (unsigned long)readUInt(&str);
             readDelim(&str);
-            mode = (uint8_t)readInt(&str);
+            mode = (uint8_t)readUInt(&str);
             for (int i = 0; i < NUM_SEGMENTS; i++) {
                 if (segments & (1 << i)) {
                     WipeNeoPixelPattern* pattern = new WipeNeoPixelPattern();
-                    pattern->setup(color1, interval1, mode);
+                    pattern->setup(colors[0], interval1, mode);
                     lights.play(*pattern, i);
                     if (i == 0) break;
                 }
             }
             break;
-        case 1:
-            color1 = readColor(&str);
+        case PATTERN_MULTIWIPE:
+            steps = readUInt(&str);
             readDelim(&str);
-            color2 = readColor(&str);
+            if (steps == 0) return ERR_INVALID_PATTERN;
+            if (steps > 3) return ERR_INVALID_PATTERN;
+            for (int i = 0; i < steps; i++) {
+                colors[i] = readColor(&str);
+                readDelim(&str);
+            }
+            interval1 = (unsigned long)readUInt(&str);
+            readDelim(&str);
+            mode = (uint8_t)readUInt(&str);
+            
+/*
+            send("numColors: "); sendInt(steps); sendChar('\n');
+            for (int i = 0; i < steps; i++) {
+                send("color "); sendInt(i); send(": "); sendLUInt(colors[i]); sendChar('\n');
+            }
+            send("interval: "); sendLUInt(interval1); sendChar('\n');
+            send("mode: "); sendInt(mode); sendChar('\n');
+*/
+            
+            for (int i = 0; i < NUM_SEGMENTS; i++) {
+                if (segments & (1 << i)) {
+                    MultiWipeNeoPixelPattern* pattern = new MultiWipeNeoPixelPattern(steps);
+                    for (int idx = 0; idx < steps; idx++) {
+                        pattern->setColor(idx, colors[idx]);
+                    }
+                    pattern->setup(interval1, mode);
+                    lights.play(*pattern, i);
+                    if (i == 0) break;
+                }
+            }
+            break;
+        case PATTERN_BLINK:
+            colors[0] = readColor(&str);
+            readDelim(&str);
+            colors[1] = readColor(&str);
             readDelim(&str);
             interval1 = (unsigned long)readUInt(&str);
             readDelim(&str);
@@ -869,13 +925,13 @@ uint8_t playLightPattern(char* str) {
             for (int i = 0; i < NUM_SEGMENTS; i++) {
                 if (segments & (1 << i)) {
                     BlinkNeoPixelPattern* pattern = new BlinkNeoPixelPattern();
-                    pattern->setup(color1, color2, interval1, interval2);
+                    pattern->setup(colors[0], colors[1], interval1, interval2);
                     lights.play(*pattern, i);
                     if (i == 0) break;
                 }
             }
             break;
-        case 2:
+        case PATTERN_RAINBOW:
             interval1 = (unsigned long)readUInt(&str);
             readDelim(&str);
             direction = (uint8_t)readInt(&str);
@@ -888,10 +944,10 @@ uint8_t playLightPattern(char* str) {
                 }
             }
             break;
-        case 3:
-            color1 = readColor(&str);
+        case PATTERN_CHASE:
+            colors[0] = readColor(&str);
             readDelim(&str);
-            color2 = readColor(&str);
+            colors[1] = readColor(&str);
             readDelim(&str);
             interval1 = (unsigned long)readUInt(&str);
             readDelim(&str);
@@ -899,29 +955,29 @@ uint8_t playLightPattern(char* str) {
             for (int i = 0; i < NUM_SEGMENTS; i++) {
                 if (segments & (1 << i)) {
                     ChaseNeoPixelPattern* pattern = new ChaseNeoPixelPattern();
-                    pattern->setup(color1, color2, interval1, direction);
+                    pattern->setup(colors[0], colors[1], interval1, direction);
                     lights.play(*pattern, i);
                     if (i == 0) break;
                 }
             }
             break;
-        case 4:
-            color1 = readColor(&str);
+        case PATTERN_SCAN:
+            colors[0] = readColor(&str);
             readDelim(&str);
             interval1 = (unsigned long)readUInt(&str);
             for (int i = 0; i < NUM_SEGMENTS; i++) {
                 if (segments & (1 << i)) {
                     ScanNeoPixelPattern* pattern = new ScanNeoPixelPattern();
-                    pattern->setup(color1, interval1);
+                    pattern->setup(colors[0], interval1);
                     lights.play(*pattern, i);
                     if (i == 0) break;
                 }
             }
             break;
-        case 5:
-            color1 = readColor(&str);
+        case PATTERN_FADE:
+            colors[0] = readColor(&str);
             readDelim(&str);
-            color2 = readColor(&str);
+            colors[1] = readColor(&str);
             readDelim(&str);
             steps = (uint16_t)readUInt(&str);
             readDelim(&str);
@@ -931,13 +987,13 @@ uint8_t playLightPattern(char* str) {
             for (int i = 0; i < NUM_SEGMENTS; i++) {
                 if (segments & (1 << i)) {
                     FadeNeoPixelPattern* pattern = new FadeNeoPixelPattern();
-                    pattern->setup(color1, color2, steps, interval1, mode);
+                    pattern->setup(colors[0], colors[1], steps, interval1, mode);
                     lights.play(*pattern, i);
                     if (i == 0) break;
                 }
             }
             break;
-        case 6:
+        case PATTERN_FIRE:
             cooling = (uint16_t)readUInt(&str);
             readDelim(&str);
             sparking = (uint16_t)readUInt(&str);
@@ -960,20 +1016,3 @@ uint8_t playLightPattern(char* str) {
     }
     return ERR_OK;
 }
-
-/*
-void startPowerPattern() {
-    segments[0] = false;
-    for (byte i = 1; i < NUM_SEGMENTS; i++) {
-        segments[i] = true;
-    }
-    prepareLightSegments();
-    for (int i = 1; i < NUM_SEGMENTS; i++) {
-        MultiWipeNeoPixelPattern* pattern = new MultiWipeNeoPixelPattern(2);
-        pattern->setColor(0, COLOR(32, 32, 32));
-        pattern->setColor(1, COLOR(32, 0, 0));
-        pattern->setup(pattern->CENTER_OUT + pattern->REPEAT);
-        lights.play(*pattern, i);
-    }
-}
-*/
