@@ -185,8 +185,6 @@ void loopSerial() {
         if ((ch == '\r') || (ch == '\n')) {
             if (inputBuffer.length) {
                 processCommand();
-            } else {
-                sendOK();
             }
             inputBuffer.data[0] = '\0';
             inputBuffer.length = 0;
