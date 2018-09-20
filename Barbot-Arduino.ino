@@ -22,7 +22,6 @@ IN THE SOFTWARE.
 
 /*
     https://github.com/adafruit/Adafruit_NeoPixel
-    https://github.com/sparkfun/SparkFun_APDS-9960_Sensor_Arduino_Library
     https://github.com/frdfsnlght/NeoPixel-Patterns
 */
 
@@ -30,7 +29,6 @@ IN THE SOFTWARE.
 #include <Arduino.h>
 #include <Wire.h>
 #include <EEPROM.h>
-#include <SparkFun_APDS9960.h>
 #include <NeoPixelController.h>
 #include <WipeNeoPixelPattern.h>
 #include <MultiWipeNeoPixelPattern.h>
@@ -42,52 +40,50 @@ IN THE SOFTWARE.
 #include <FireNeoPixelPattern.h>
 #include <Colors.h>
 
-#define PIN_SERIAL_RX           0
-#define PIN_SERIAL_TX           1
+constexpr int PIN_SERIAL_RX             = 0;
+constexpr int PIN_SERIAL_TX             = 1;
 
-#define PIN_BUTTON              2
-#define PIN_RELAY1              4
-#define PIN_RELAY2              5
-#define PIN_LIGHTS              6
-#define PIN_LED                 13
-#define PIN_I2C_DA              A4
-#define PIN_I2C_CL              A5
+constexpr int PIN_BUTTON                = 2;
+constexpr int PIN_SENSOR                = 3;
+constexpr int PIN_RELAY1                = 4;
+constexpr int PIN_RELAY2                = 5;
+constexpr int PIN_LIGHTS                = 6;
+constexpr int PIN_LED                   = 13;
 
-#define NUM_PIXELS              60
-#define NUM_SEGMENTS            5
-#define NUM_PATTERN_SLOTS       8
-#define PATTERN_SLOT_BASE       0
+constexpr int NUM_PIXELS                = 60;
+constexpr int NUM_SEGMENTS              = 5;
+constexpr int NUM_PATTERN_SLOTS         = 8;
+constexpr int PATTERN_SLOT_BASE         = 0;
 
-#define INPUT_BUFFER_LENGTH     64
+constexpr int INPUT_BUFFER_LENGTH       = 64;
 
-#define LED_TOGGLE_INTERVAL_FAST  250
-#define LED_TOGGLE_INTERVAL_SLOW  1000
-#define SENSOR_READ_INTERVAL    250
-#define PROXIMITY_WINDOW        5
-#define BUTTON_PRESS_SHORT      1000
-#define BUTTON_PRESS_LONG       8000
+constexpr unsigned long LED_TOGGLE_INTERVAL_FAST    = 250;
+constexpr unsigned long LED_TOGGLE_INTERVAL_SLOW    = 1000;
+constexpr unsigned long SENSOR_READ_INTERVAL        = 250;
+constexpr unsigned long BUTTON_PRESS_SHORT          = 1000;
+constexpr unsigned long BUTTON_PRESS_LONG           = 8000;
 
-#define PATTERN_WIPE            0
-#define PATTERN_MULTIWIPE       1
-#define PATTERN_BLINK           2
-#define PATTERN_RAINBOW         3
-#define PATTERN_CHASE           4
-#define PATTERN_SCAN            5
-#define PATTERN_FADE            6
-#define PATTERN_FIRE            7
+constexpr byte PATTERN_WIPE             = 0;
+constexpr byte PATTERN_MULTIWIPE        = 1;
+constexpr byte PATTERN_BLINK            = 2;
+constexpr byte PATTERN_RAINBOW          = 3;
+constexpr byte PATTERN_CHASE            = 4;
+constexpr byte PATTERN_SCAN             = 5;
+constexpr byte PATTERN_FADE             = 6;
+constexpr byte PATTERN_FIRE             = 7;
 
-#define STATE_OFF               0
-#define STATE_OFF_P             1
-#define STATE_OFF_LP            2
-#define STATE_WAIT_ON           3
-#define STATE_WAIT_ON_SP        4
-#define STATE_ON                5
-#define STATE_ON_P              6
-#define STATE_ON_SP             7
+constexpr byte STATE_OFF                = 0;
+constexpr byte STATE_OFF_P              = 1;
+constexpr byte STATE_OFF_LP             = 2;
+constexpr byte STATE_WAIT_ON            = 3;
+constexpr byte STATE_WAIT_ON_SP         = 4;
+constexpr byte STATE_ON                 = 5;
+constexpr byte STATE_ON_P               = 6;
+constexpr byte STATE_ON_SP              = 7;
 
-#define ERR_OK                  0
-#define ERR_NO_PATTERN          1
-#define ERR_INVALID_PATTERN     2
+constexpr int ERR_OK                   = 0;
+constexpr int ERR_NO_PATTERN           = 1;
+constexpr int ERR_INVALID_PATTERN      = 2;
 
 
 
@@ -120,12 +116,8 @@ uint8_t segments = 0;
 // on a live circuit...if you must, connect GND first.
 
 
-SparkFun_APDS9960 apds = SparkFun_APDS9960();
-bool apdsSetup = false;
-uint8_t proximityData = 0;
-uint32_t lastSensorRead = 0;
-uint8_t proximityGain = PGAIN_2X;
-uint8_t proximityWindow = PROXIMITY_WINDOW;
+bool proximityData = false;
+uint32_t lastSensorReadTime = 0;
 
 bool ledOn = false;
 uint32_t lastLEDToggleTime = 0;
@@ -141,7 +133,9 @@ void setup() {
     Serial.begin(115200, SERIAL_8N1);
 
     pinMode(PIN_BUTTON, INPUT);
+    pinMode(PIN_SENSOR, INPUT);
     digitalWrite(PIN_BUTTON, HIGH); // enable pullup
+    digitalWrite(PIN_SENSOR, HIGH); // enable pullup
     pinMode(PIN_RELAY1, OUTPUT);
     pinMode(PIN_RELAY2, OUTPUT);
     pinMode(PIN_LED, OUTPUT);
@@ -159,12 +153,6 @@ void setup() {
     
     randomSeed(analogRead(0));
     
-    // Initialize APDS-9960 (configure I2C and initial values)
-    apdsSetup = apds.init();
-    if (apdsSetup) {
-        configureSensors();
-    }
-
     turnOffLED();
         
     sendMessage(F("Barbot-Arduino ready"));
@@ -174,7 +162,7 @@ void loop() {
     loopSerial();
     loopLights();
     loopButton();
-    loopSensors();
+    loopSensor();
     loopPower();
     loopLED();
 }
@@ -291,17 +279,13 @@ void loopButton() {
     }
 }
 
-void loopSensors() {
-    if (apdsSetup && ((millis() - lastSensorRead) >= SENSOR_READ_INTERVAL)) {
-        lastSensorRead = millis();
-        uint8_t newProximityData;
-        if (apds.readProximity(newProximityData)) {
-            if (((proximityData > proximityWindow) && (newProximityData < (proximityData - proximityWindow))) ||
-                ((proximityData < (255 - proximityWindow)) && (newProximityData > (proximityData + proximityWindow)))
-                ) {
-                proximityData = newProximityData;
-                sendSensorData();
-            }
+void loopSensor() {
+    if ((millis() - lastSensorReadTime) >= SENSOR_READ_INTERVAL) {
+        lastSensorReadTime = millis();
+        bool sensor = digitalRead(PIN_SENSOR);
+        if (sensor != proximityData) {
+            proximityData = sensor;
+            sendSensorData();
         }
     }
 }
@@ -495,14 +479,6 @@ void cmdLightStatus() {
 
 void processSensorCommand(char* cmd) {
     switch (cmd[0]) {
-        case 'G':
-        case 'g':
-            cmdSensorGain(cmd + 1);
-            break;
-        case 'W':
-        case 'w':
-            cmdSensorWindow(cmd + 1);
-            break;
         case '?':
             cmdSensorStatus();
             break;
@@ -512,39 +488,13 @@ void processSensorCommand(char* cmd) {
     }
 }
 
-void cmdSensorGain(char* str) {
-    unsigned gain = readUInt(&str);
-    if ((gain < PGAIN_2X) || (gain > PGAIN_8X)) {
-        sendError(F("invalid gain"));
-        return;
-    }
-    proximityGain = gain;
-    configureSensors();
-    sendOK();
-}
-
-void cmdSensorWindow(char* str) {
-    uint8_t window = (uint8_t)readUInt(&str);
-    proximityWindow = window;
-    sendOK();
-}
-
 void cmdSensorStatus() {
-    send(F("gain: "));
-    sendInt(proximityGain);
-    sendChar('\n');
-    
-    send(F("window: "));
-    sendInt(proximityWindow);
-    sendChar('\n');
-    
-    send(F("data: "));
-    sendInt(proximityData);
+    send(F("sensor: "));
+    send(proximityData ? "true" : "false");
     sendChar('\n');
     
     sendOK();
 }
-
 
 // =========== Power commands
 
@@ -748,15 +698,6 @@ void sendSensorData() {
     send(F("*S"));
     sendInt(proximityData);
     sendChar('\n');
-}
-
-void configureSensors() {
-    if (! apdsSetup) return;
-    apds.disableLightSensor();
-    apds.disableGestureSensor();
-    
-    apds.setProximityGain(proximityGain);
-    apds.enableProximitySensor(false);  // no interrupts, polling only
 }
 
 void turnOnRelays() {
